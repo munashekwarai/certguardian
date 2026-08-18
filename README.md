@@ -1,70 +1,117 @@
 # CertGuardian
 
-**Cybersecurity · PKI · DevOps**
+**Cybersecurity · PKI · DevOps · Operations**
+
+CertGuardian is a lightweight TLS certificate inventory and evidence system for teams that cannot afford to discover expiry through an outage.
 
 ## Problem
-Certificate dependencies are tracked in spreadsheets, calendars, or memory.
+
+Certificates protecting websites, APIs, VPNs, reverse proxies, dashboards, and internal applications often live in spreadsheets, calendars, or an administrator's memory. A certificate can remain unnoticed for months and then break browsers, clients, and integrations when it expires.
 
 ## Who This Helps
-Operators of websites, APIs, VPNs, proxies, and internal applications.
+
+Small infrastructure, platform, security, and IT operations teams responsible for multiple TLS endpoints without an enterprise certificate-management platform.
 
 ## Why It Matters
-An unnoticed expiry can cause an outage, failed integration, and emergency renewal.
+
+Expiry causes avoidable outages and emergency renewals. Inventory alone is insufficient: operators need evidence of what the endpoint actually presented, whether the hostname matched, how validity changed over time, and which owner must act.
 
 ## Constraints
-The system must be inexpensive, inspectable, testable without paid services, conservative about claims, and safe with untrusted input. SQLite/local execution is the default; production deployments need deliberate persistence, identity, networking, and backup choices.
+
+The system must run without a paid service, private CA integration, or certificate files. It observes endpoints from one network vantage point, uses the operating-system CA trust store, stores evidence locally in SQLite, and never claims it can renew certificates.
 
 ## Solution
-A TLS scanner validates hostnames, extracts issuer/SAN/validity, assigns threshold alerts, and stores scan history.
+
+Operators register named endpoints with an owner, port, scan interval, and thresholds. An SNI-aware scanner performs a verified TLS handshake and records issuer, subject, SANs, validity, serial number, protocol, cipher, SHA-256 fingerprint, hostname validity, remaining days, and bounded failures. A scheduler scans only endpoints whose interval is due. Historical results remain immutable and the attention view is derived from the latest evidence.
 
 ## Architecture
+
 ```mermaid
 flowchart LR
-  Targets[Certificate inventory] --> Runner[Scheduled scan runner]
-  Runner --> Socket[TCP connection]
-  Socket --> Handshake[TLS handshake + SNI]
-  Handshake --> Parser[Issuer / SAN / validity parser]
-  Parser --> Hostname[Hostname verifier]
-  Hostname --> Thresholds[Expiry threshold engine]
-  Thresholds --> Scans[(Historical scans)]
-  Thresholds --> Due[Due-host alert list]
-  CLI[CLI / JSON] --> Runner
-  API[REST API] --> Runner
+ Inventory[(Endpoint inventory)] --> Due[Due-scan scheduler]
+ Due --> TCP[Bounded TCP connection]
+ TCP --> TLS[SNI + verified TLS handshake]
+ TLS --> Parse[Certificate evidence parser]
+ Parse --> Threshold[Expiry classifier]
+ Threshold --> History[(Immutable SQLite history)]
+ History --> Attention[Attention view]
+ CLI[Typer CLI] --> Inventory
+ API[FastAPI] --> Inventory
+ API --> Attention
 ```
-See [architecture](docs/architecture.md).
 
-## Features
-The repository implements its domain engine, validation, durable/local state where applicable, executable interfaces, meaningful tests, structured errors, and automation.
+See [architecture](docs/architecture.md), [security](docs/security.md), and [threat model](docs/threat-model.md).
+
+## Implemented Features
+
+- Named inventory with host, port, owner, enablement, interval, and thresholds.
+- TLS chain trust and hostname validation through the platform SSL context.
+- Issuer, subject, SAN, serial, validity, protocol, cipher, and SHA-256 fingerprint evidence.
+- Default `30, 15, 10, 5, 3, 2, 1` day thresholds and custom per-endpoint thresholds.
+- `HEALTHY`, `DUE`, `EXPIRED`, and `ERROR` scan states.
+- Due-only scheduling, continuous supervised polling, immutable history, and attention listing.
+- CLI for one-shot scans, inventory registration, persisted scans, due listing, and watch mode.
+- REST inventory, scan, due-scan, history, alert, and health endpoints.
+- Non-root, read-only container deployment with durable SQLite storage.
 
 ## Technology Stack
-Python 3.11 provides a portable typed core; FastAPI provides OpenAPI-backed HTTP endpoints; Typer provides operator-friendly commands; SQLite provides a zero-service evidence store. CloudForge instead uses Terraform, Docker, NGINX, and shell-based verification.
+
+Python's `ssl` and `socket` libraries provide SNI-aware verified handshakes without invoking OpenSSL as a shell command. SQLite provides inexpensive evidence retention. FastAPI validates HTTP input and publishes OpenAPI. Typer provides operational commands. Pytest uses injected scanners and network mocks for deterministic behavior.
 
 ## Setup
+
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -e '.[dev]'
 ```
-Copy `.env.example` to `.env` only for local overrides; `.env` is ignored.
 
 ## Usage
+
 ```bash
-python -m app.cli --help
-uvicorn app.api:app --host 127.0.0.1 --port 8000
+certguardian scan example.com
+certguardian add public-site example.com --owner platform
+certguardian run 1
+certguardian due
+certguardian watch --poll-seconds 60
 ```
-CloudForge users should follow `docs/deployment.md`.
+
+```bash
+CERTGUARDIAN_DB=./data/certguardian.db uvicorn app.api:app --host 127.0.0.1 --port 8001
+curl -X POST http://127.0.0.1:8001/endpoints -H 'content-type: application/json' \
+  -d '{"name":"public-site","host":"example.com","owner":"platform","thresholds":[30,15,10,5,3,2,1]}'
+curl -X POST http://127.0.0.1:8001/endpoints/1/scan
+curl http://127.0.0.1:8001/alerts
+```
+
+Container:
+
+```bash
+docker compose up --build -d
+curl http://127.0.0.1:8001/health
+```
 
 ## Testing
+
 ```bash
 pytest -q
+python -m compileall -q app tests
 ```
-Tests exercise domain behavior and failure paths without paid infrastructure.
+
+Tests cover exact threshold boundaries, inventory validation, durable history, scheduling intervals, failure evidence, continuous polling, and REST workflows without depending on a public certificate.
 
 ## Security
-Inputs are bounded and validated, secrets are accepted through the environment rather than source, errors avoid sensitive internals, and CI runs tests. See [security](docs/security.md) and [threat model](docs/threat-model.md).
+
+Endpoint registration triggers outbound TCP and TLS activity and must be administrative. Compose binds to loopback, but remote deployments require authenticated authorization and egress rules. The scanner uses the platform CA store, SNI, and hostname validation; it never disables verification. Stored topology and certificate metadata may be sensitive. See the security document for operational controls.
 
 ## Limitations
-It observes presented TLS certificates; it cannot renew certificates or discover unregistered endpoints.
+
+- Does not discover endpoints, issue certificates, renew certificates, modify DNS, or integrate with a CA.
+- Observes only the certificate presented from its network path and SNI value.
+- Does not implement OCSP/CRL policy, Certificate Transparency monitoring, or full chain archival.
+- SQLite and the polling process are a single availability domain.
+- Notification delivery is intentionally separate; `/alerts` provides actionable state for an external notifier.
 
 ## Contributing
-Read [CONTRIBUTING.md](CONTRIBUTING.md), add tests for behavior changes, and avoid real personal or secret data in fixtures.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md). Scanner changes must include deterministic certificate or mocked-network evidence and must not weaken TLS verification.

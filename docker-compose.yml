@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    ports: ["127.0.0.1:8001:8000"]
+    environment:
+      CERTGUARDIAN_DB: /data/certguardian.db
+    volumes: ["certguardian_data:/data"]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  certguardian_data: {}
