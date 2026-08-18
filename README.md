@@ -20,11 +20,16 @@ A TLS scanner validates hostnames, extracts issuer/SAN/validity, assigns thresho
 ## Architecture
 ```mermaid
 flowchart LR
-  Input[Validated input] --> Core[Domain engine]
-  Core --> Store[(Durable store)]
-  CLI[CLI] --> Core
-  API[REST API] --> Core
-  Core --> Evidence[Results and evidence]
+  Targets[Certificate inventory] --> Runner[Scheduled scan runner]
+  Runner --> Socket[TCP connection]
+  Socket --> Handshake[TLS handshake + SNI]
+  Handshake --> Parser[Issuer / SAN / validity parser]
+  Parser --> Hostname[Hostname verifier]
+  Hostname --> Thresholds[Expiry threshold engine]
+  Thresholds --> Scans[(Historical scans)]
+  Thresholds --> Due[Due-host alert list]
+  CLI[CLI / JSON] --> Runner
+  API[REST API] --> Runner
 ```
 See [architecture](docs/architecture.md).
 
